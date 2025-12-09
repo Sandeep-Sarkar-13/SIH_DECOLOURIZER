@@ -2,77 +2,8 @@ import base64
 import cv2
 import numpy as np
 
-from dash import Dash, html, dcc, Input, Output, State, callback_context, no_update
+from dash import Dash, html, dcc, Input, Output, no_update
 import dash_bootstrap_components as dbc
-
-
-# ================== VIDEO SOURCE (DRONE / CAMERA) ==================
-# If using USB camera: set to 0, 1, 2...
-# If using drone/IP stream: set to the stream URL, e.g. "rtsp://..." or "http://..."
-VIDEO_SOURCE = 1  # <<< CHANGE THIS TO YOUR DRONE FEED IF NEEDED
-
-# Global capture object (kept open for live stream)
-cap = None
-capture_warmed = False
-
-
-def get_video_capture():
-    global cap, capture_warmed
-
-    # In cloud, we normally don't have a camera
-    if VIDEO_SOURCE is None:
-        return None
-
-
-    # Reuse if already opened
-    if cap is not None and cap.isOpened():
-        return cap
-
-    # Open again
-    if isinstance(VIDEO_SOURCE, int):
-        cap = cv2.VideoCapture(VIDEO_SOURCE, cv2.CAP_DSHOW)
-    else:
-        cap = cv2.VideoCapture(VIDEO_SOURCE)
-
-    if not cap.isOpened():
-        print("❌ Could not open video source:", VIDEO_SOURCE)
-        cap = None
-        return None
-
-    capture_warmed = False
-    return cap
-
-
-def read_frame_from_stream():
-    """
-    Read a single (stable) frame from the global video capture.
-    - Performs a short warmup when the stream is first opened.
-    - Handles BGRA → BGR if needed.
-    """
-    global capture_warmed, cap
-
-    cap = get_video_capture()
-    if cap is None:
-        return None
-
-    # Warmup: discard first few frames to avoid corrupted frame
-    if not capture_warmed:
-        for _ in range(10):
-            ret, _ = cap.read()
-            if not ret:
-                continue
-        capture_warmed = True
-
-    ret, frame = cap.read()
-    if not ret or frame is None:
-        print("⚠️ Failed to read frame from stream.")
-        return None
-
-    # Some devices give 4-channel BGRA
-    if frame.ndim == 3 and frame.shape[2] == 4:
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-
-    return frame
 
 
 # ================== IMAGE ANALYSIS LOGIC ==================
@@ -230,17 +161,6 @@ app.layout = html.Div(
         "padding": "30px 10px",
     },
     children=[
-        # Store to track live camera state
-        dcc.Store(id="camera-active", data=False),
-
-        # Interval to pull frames from the video stream
-        dcc.Interval(
-            id="video-interval",
-            interval=500,          # ms between frames (0.5s) – adjust as you like
-            n_intervals=0,
-            disabled=True          # enabled when user clicks Start
-        ),
-
         dbc.Container(
             [
                 dbc.Card(
@@ -269,7 +189,7 @@ app.layout = html.Div(
 
                         dbc.CardBody(
                             [
-                                # Controls row
+                                # Controls row (only upload now)
                                 dbc.Row(
                                     [
                                         dbc.Col(
@@ -290,23 +210,7 @@ app.layout = html.Div(
                                                 },
                                             ),
                                             width="auto",
-                                        ),
-                                        dbc.Col(
-                                            html.Button(
-                                                "📷 Start Live Feed",
-                                                id="analyze-camera-btn",
-                                                n_clicks=0,
-                                                className="btn shadow-sm",
-                                                style={
-                                                    "background": "linear-gradient(90deg,#00c6ff,#0072ff)",
-                                                    "color": "white",
-                                                    "fontWeight": "600",
-                                                    "padding": "0.6rem 1.5rem",
-                                                    "borderRadius": "999px",
-                                                    "border": "none",
-                                                },
-                                            ),
-                                            width="auto",
+                                            className="d-flex justify-content-center",
                                         ),
                                     ],
                                     className="mb-4 g-3 justify-content-center",
@@ -322,7 +226,7 @@ app.layout = html.Div(
                                                     dbc.Card(
                                                         [
                                                             dbc.CardHeader(
-                                                                "Input Image / Live Frame",
+                                                                "Input Image",
                                                                 className="fw-bold",
                                                                 style={
                                                                     "background": "linear-gradient(90deg,#4facfe,#00f2fe)",
@@ -511,64 +415,22 @@ def make_stat_cards(stats: dict):
     return items
 
 
-# ============== CALLBACK: TOGGLE LIVE CAMERA ON/OFF ==============
-
-@app.callback(
-    Output("camera-active", "data"),
-    Output("video-interval", "disabled"),
-    Output("analyze-camera-btn", "children"),
-    Input("analyze-camera-btn", "n_clicks"),
-    State("camera-active", "data"),
-    prevent_initial_call=True,
-)
-def toggle_camera(n_clicks, camera_active):
-    # Toggle state
-    new_active = not camera_active
-    button_text = "⏹ Stop Live Feed" if new_active else "📷 Start Live Feed"
-    # Interval is enabled when camera is active
-    interval_disabled = not new_active
-    return new_active, interval_disabled, button_text
-
-
-# ============== CALLBACK: HANDLE UPLOAD + LIVE STREAM FRAMES ==============
+# ============== CALLBACK: HANDLE UPLOAD ONLY ==================
 
 @app.callback(
     Output("input-image-display", "src"),
     Output("output-image-display", "src"),
     Output("stats-display", "children"),
     Input("upload-image", "contents"),
-    Input("video-interval", "n_intervals"),
-    State("camera-active", "data"),
     prevent_initial_call=True,
 )
-def handle_image(upload_contents, n_intervals, camera_active):
-    ctx = callback_context
-
-    if not ctx.triggered:
+def handle_image(upload_contents):
+    if upload_contents is None:
         return no_update, no_update, no_update
 
-    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    img_bgr = None
+    img_bgr = base64_to_np(upload_contents)
 
-    # Case 1: user uploaded a single image
-    if trigger_id == "upload-image" and upload_contents is not None:
-        img_bgr = base64_to_np(upload_contents)
-
-    # Case 2: interval fired while live camera mode is active
-    elif trigger_id == "video-interval" and camera_active:
-        frame = read_frame_from_stream()
-        if frame is None:
-            msg = html.Div(
-                "⚠️ Could not read frame from video stream. Check connection/source.",
-                className="text-warning fw-bold",
-                style={"padding": "0.5rem 0"},
-            )
-            return no_update, no_update, msg
-        img_bgr = frame
-    else:
-        return no_update, no_update, no_update
-
-    # Run analysis on this frame
+    # Run analysis on this image
     stats, overlay_img, resized_input = analyze_rice_field_discoloration(
         img_bgr,
         field_area_m2=DEFAULT_FIELD_AREA_M2,
@@ -584,6 +446,3 @@ def handle_image(upload_contents, n_intervals, camera_active):
 
 if __name__ == "__main__":
     app.run_server(debug=True)
-
-
-
