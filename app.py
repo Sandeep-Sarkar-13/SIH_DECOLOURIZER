@@ -9,7 +9,7 @@ import dash_bootstrap_components as dbc
 # ================== VIDEO SOURCE (DRONE / CAMERA) ==================
 # If using USB camera: set to 0, 1, 2...
 # If using drone/IP stream: set to the stream URL, e.g. "rtsp://..." or "http://..."
-VIDEO_SOURCE = 0  # <<< CHANGE THIS TO YOUR DRONE FEED IF NEEDED
+VIDEO_SOURCE = 1  # <<< CHANGE THIS TO YOUR DRONE FEED IF NEEDED
 
 # Global capture object (kept open for live stream)
 cap = None
@@ -17,12 +17,12 @@ capture_warmed = False
 
 
 def get_video_capture():
-    """
-    Open (or reuse) the global video capture.
-    - Uses DirectShow backend for integer camera indexes on Windows.
-    - Uses default backend for URLs (IP/RTSP streams).
-    """
     global cap, capture_warmed
+
+    # In cloud, we normally don't have a camera
+    if VIDEO_SOURCE is None:
+        return None
+
 
     # Reuse if already opened
     if cap is not None and cap.isOpened():
@@ -584,5 +584,6 @@ def handle_image(upload_contents, n_intervals, camera_active):
 
 if __name__ == "__main__":
     app.run_server(debug=True)
+
 
 
